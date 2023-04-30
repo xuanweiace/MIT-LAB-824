@@ -37,7 +37,7 @@ func Worker(mapf func(string, string) []KeyValue,
 	job := getEmptyJob()
 	for {
 		job = CallAssignJob(worker_id, job)
-		log.Printf("[Worker] worker=%d, get job=%v", worker_id, job)
+		log.Printf("[Worker] worker=%d, get job=%+v", worker_id, job)
 		// 对job进行操作
 		switch job.Type {
 		case MapJob:
@@ -147,16 +147,14 @@ func readFromFile(filename string) []KeyValue {
 }
 func CallAssignJob(workerId int, done_job JobMeta) JobMeta {
 	req := AssignJobRequest{
-		WorkerId: 0,
+		WorkerId: workerId,
 		Job:      done_job,
 	}
-	resp := AssignJobResponse{
-		Job: JobMeta{},
-	}
+	resp := AssignJobResponse{}
 	log.Printf("[CallAssignJob] workerId=%d, 即将远程调用AssignJob", req.WorkerId)
-	ok := call("Coordinator.RegisterWorker", &req, &resp)
+	ok := call("Coordinator.AssignJob", &req, &resp)
 	if ok {
-		return resp.Job
+		return *resp.Job
 	} else {
 		log.Printf("[CallAssignJob] workerId=%d, 调用AssignJob失败", req.WorkerId)
 		return getNoJob() // 调用失败，也返回NoJob，睡眠后重新获取

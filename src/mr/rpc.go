@@ -36,7 +36,7 @@ type AssignJobRequest struct {
 }
 
 type AssignJobResponse struct {
-	Job JobMeta
+	Job *JobMeta
 }
 
 // Cook up a unique-ish UNIX-domain socket name

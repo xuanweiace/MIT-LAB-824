@@ -46,7 +46,7 @@ type workerMeta struct {
 
 // todo 需要加锁吗？是单线程执行这个的吗？ 应该是需要加锁的
 func (c *Coordinator) RegisterWorker(args *RegisterWorkerRequest, reply *RegisterWorkerResponse) error {
-	log.Println("[coordinator] RegisterWorker called")
+	log.Println("[coordinator] RegisterWorker called", c.gen_worker_id)
 	reply.Id = c.generate_worker_id()
 	c.addWorker(workerMeta{id: reply.Id})
 	return nil
@@ -59,28 +59,31 @@ func (c *Coordinator) AssignJob(req *AssignJobRequest, resp *AssignJobResponse) 
 	defer c.mu.Unlock()
 	//检查是否有携带已完成任务，有可能发生MR状态转换的
 	if req.Job.Status == JobFinish {
+		log.Printf("当前任务已完成，开始分发下一个")
 		c.finishJob(req.WorkerId, req.Job)
 	}
+	noJob := getNoJob()
+	stopJob := getStopJob()
 	if c.meta.status == MapPhase {
 		if len(c.meta.mapJobs) > 0 { // 有可分配的map任务
 			j := <-c.meta.mapJobs
 			log.Printf("[AssignJob] workerId=%d, get MapJobId=%d", req.WorkerId, j.Id)
-			resp.Job = *j
+			resp.Job = j
 			j.Status = JobRunning // 这样不会影响resp的status=Init，因为AssignJobResponse里的JobMeta不是指针。
 		} else { // 没有可分配的任务且刚刚没有MR状态转换，说明有任务没执行完，让他等待即可。
-			resp.Job = getNoJob()
+			resp.Job = &noJob
 		}
 	} else if c.meta.status == MapPhase {
 		if len(c.meta.reduceJobs) > 0 {
 			j := <-c.meta.reduceJobs
 			log.Printf("[AssignJob] workerId=%d, get ReduceJobId=%d", req.WorkerId, j.Id)
-			resp.Job = *j
+			resp.Job = j
 			j.Status = JobRunning
 		} else {
-			resp.Job = getNoJob()
+			resp.Job = &noJob
 		}
 	} else { // 如果MR是Done状态了
-		resp.Job = getStopJob()
+		resp.Job = &stopJob
 	}
 	log.Println("[coordinator] AssignJob called")
 	return nil
@@ -153,8 +156,10 @@ func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
 func (c *Coordinator) server() {
 	rpc.Register(c)
 	rpc.HandleHTTP()
+
 	//l, e := net.Listen("tcp", ":1234")
 	sockname := coordinatorSock()
+	log.Printf("Coordinator sockname:%v", sockname)
 	os.Remove(sockname)
 	l, e := net.Listen("unix", sockname)
 	if e != nil {
@@ -188,7 +193,7 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 			reduceJobs: make(chan *JobMeta, nReduce),    // 带缓冲channel，来存储任务队列
 			files:      files,
 			nReduce:    nReduce,
-			status:     0,
+			status:     MapPhase,
 		},
 		worker:        map[int]*workerMeta{},
 		gen_worker_id: 0,
@@ -196,6 +201,7 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 		mu:            sync.Mutex{},
 	}
 	c.initJobs()
+	log.Println("00223")
 
 	// Your code here.
 
@@ -214,10 +220,10 @@ func (c *Coordinator) initJobs() {
 			NReduce:  c.meta.nReduce,
 		}
 	}
+
 	//todo  init reduce jobs
 	for i := 0; i < c.meta.nReduce; i++ {
-
-		c.meta.mapJobs <- &JobMeta{
+		c.meta.reduceJobs <- &JobMeta{
 			Id:        c.generate_job_id(),
 			Type:      MapJob,
 			Status:    JobInit,
