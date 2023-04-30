@@ -27,11 +27,32 @@ func Worker(mapf func(string, string) []KeyValue,
 	// Your worker implementation here.
 	worker_id := CallRegisterWorker()
 	fmt.Println("远程调用获得的id=", worker_id)
-	// uncomment to send the Example RPC to the coordinator.
-	// CallExample()
-
+	job := JobMeta{}
+	for {
+		new_job := JobMeta{}
+		CallAssignJob(&AssignJobRequest{
+			WorkerId: worker_id,
+			Job:      job,
+		}, &AssignJobResponse{
+			Job: new_job,
+		})
+		job = new_job
+	}
 }
-
+func CallAssignJob(req *AssignJobRequest, resp *AssignJobResponse) {
+	// req := AssignJobRequest{
+	// 	WorkerId: 0,
+	// 	Job:      getEmptyJob(),
+	// }
+	// resp := AssignJobResponse{
+	// 	Job: JobMeta{},
+	// }
+	log.Printf("[CallAssignJob] workerId=%d, 即将远程调用AssignJob", req.WorkerId)
+	ok := call("Coordinator.RegisterWorker", req, resp)
+	if !ok {
+		log.Printf("[CallAssignJob] workerId=%d, 调用AssignJob失败", req.WorkerId)
+	}
+}
 func CallRegisterWorker() int {
 	req := RegisterWorkerRequest{}
 	resp := RegisterWorkerResponse{}
