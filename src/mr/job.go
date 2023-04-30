@@ -19,10 +19,12 @@ const (
 )
 
 type JobMeta struct {
-	Id       int
-	Type     JobType
-	Filename string
-	Status   JobStutus
+	Id        int
+	Type      JobType
+	Filename  string
+	Status    JobStutus
+	NReduce   int
+	JobReduce int
 }
 
 var emptyJob JobMeta

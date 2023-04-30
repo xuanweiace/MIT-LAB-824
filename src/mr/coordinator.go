@@ -195,9 +195,34 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 		gen_job_id:    0,
 		mu:            sync.Mutex{},
 	}
+	c.initJobs()
 
 	// Your code here.
 
 	c.server()
 	return &c
+}
+
+func (c *Coordinator) initJobs() {
+	for _, v := range c.meta.files {
+
+		c.meta.mapJobs <- &JobMeta{
+			Id:       c.generate_job_id(),
+			Type:     MapJob,
+			Filename: v,
+			Status:   JobInit,
+			NReduce:  c.meta.nReduce,
+		}
+	}
+	//todo  init reduce jobs
+	for i := 0; i < c.meta.nReduce; i++ {
+
+		c.meta.mapJobs <- &JobMeta{
+			Id:        c.generate_job_id(),
+			Type:      MapJob,
+			Status:    JobInit,
+			NReduce:   c.meta.nReduce,
+			JobReduce: i,
+		}
+	}
 }
