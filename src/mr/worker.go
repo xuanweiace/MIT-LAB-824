@@ -24,12 +24,25 @@ func ihash(key string) int {
 // main/mrworker.go calls this function.
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
-	fmt.Println("in Worker zxzzxzzxz")
 	// Your worker implementation here.
-
+	worker_id := CallRegisterWorker()
+	fmt.Println("远程调用获得的id=", worker_id)
 	// uncomment to send the Example RPC to the coordinator.
 	// CallExample()
 
+}
+
+func CallRegisterWorker() int {
+	req := RegisterWorkerRequest{}
+	resp := RegisterWorkerResponse{}
+	fmt.Println("即将远程调用RegisterWorker")
+	ok := call("Coordinator.RegisterWorker", &req, &resp)
+	fmt.Println("resp:", resp)
+	if ok {
+		return resp.Id
+	} else {
+		return -1
+	}
 }
 
 // example function to show how to make an RPC call to the coordinator.
