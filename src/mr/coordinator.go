@@ -268,7 +268,6 @@ func (c *Coordinator) initJobs() {
 		c.meta.mapJobs <- j
 	}
 
-	//todo  init reduce jobs
 	for i := 0; i < c.meta.nReduce; i++ {
 		j := &JobMeta{
 			Id:        c.generate_job_id(),
