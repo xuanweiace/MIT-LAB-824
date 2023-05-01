@@ -29,7 +29,7 @@ type Coordinator struct {
 type MRMeta struct {
 	mapJobs    chan *JobMeta
 	reduceJobs chan *JobMeta
-	jobs       map[int]JobMeta
+	jobs       map[int]*JobMeta
 	files      []string
 	nReduce    int
 	status     MRStatus
@@ -46,8 +46,8 @@ type workerMeta struct {
 
 // todo 需要加锁吗？是单线程执行这个的吗？ 应该是需要加锁的
 func (c *Coordinator) RegisterWorker(args *RegisterWorkerRequest, reply *RegisterWorkerResponse) error {
-	log.Println("[coordinator] RegisterWorker called", c.gen_worker_id)
 	reply.Id = c.generate_worker_id()
+	log.Println("[coordinator] RegisterWorker called, assign workerid=", reply.Id)
 	c.addWorker(workerMeta{id: reply.Id})
 	return nil
 }
@@ -58,8 +58,9 @@ func (c *Coordinator) AssignJob(req *AssignJobRequest, resp *AssignJobResponse) 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	//检查是否有携带已完成任务，有可能发生MR状态转换的
-	if req.Job.Status == JobFinish {
-		log.Printf("当前任务已完成，开始分发下一个")
+	// 只处理map和reduce两种job即可
+	if req.Job.Status == JobFinish && (req.Job.isMapJob() || req.Job.isReduceJob()) {
+		log.Printf("当前任务%d已完成，开始分发下一个", req.Job.Id)
 		c.finishJob(req.WorkerId, req.Job)
 	}
 	noJob := getNoJob()
@@ -67,16 +68,16 @@ func (c *Coordinator) AssignJob(req *AssignJobRequest, resp *AssignJobResponse) 
 	if c.meta.status == MapPhase {
 		if len(c.meta.mapJobs) > 0 { // 有可分配的map任务
 			j := <-c.meta.mapJobs
-			log.Printf("[AssignJob] workerId=%d, get MapJobId=%d", req.WorkerId, j.Id)
+			log.Printf("[AssignJob] workerId=%d, assigned MapJobId=%d", req.WorkerId, j.Id)
 			resp.Job = j
 			j.Status = JobRunning // 这样不会影响resp的status=Init，因为AssignJobResponse里的JobMeta不是指针。
 		} else { // 没有可分配的任务且刚刚没有MR状态转换，说明有任务没执行完，让他等待即可。
 			resp.Job = &noJob
 		}
-	} else if c.meta.status == MapPhase {
+	} else if c.meta.status == ReducePhase {
 		if len(c.meta.reduceJobs) > 0 {
 			j := <-c.meta.reduceJobs
-			log.Printf("[AssignJob] workerId=%d, get ReduceJobId=%d", req.WorkerId, j.Id)
+			log.Printf("[AssignJob] workerId=%d, assigned ReduceJobId=%d", req.WorkerId, j.Id)
 			resp.Job = j
 			j.Status = JobRunning
 		} else {
@@ -84,6 +85,10 @@ func (c *Coordinator) AssignJob(req *AssignJobRequest, resp *AssignJobResponse) 
 		}
 	} else { // 如果MR是Done状态了
 		resp.Job = &stopJob
+	}
+	// 如果是noJob，查看是不是有worker断掉了，但是任务没完成
+	if resp.Job.isNoJob() {
+
 	}
 	log.Println("[coordinator] AssignJob called")
 	return nil
@@ -98,10 +103,13 @@ func (c *Coordinator) finishJob(workerId int, job JobMeta) {
 	x.setFinish()
 	//查看是否需要转换状态
 	if c.meta.status == MapPhase && c.checkAllMapJobDone() {
+		log.Printf("状态转换到Reduce Phase")
 		c.meta.status = ReducePhase
-	} else if c.meta.status == MapPhase && c.checkAllReduceJobDone() {
+	} else if c.meta.status == ReduceJob && c.checkAllReduceJobDone() {
+		log.Printf("状态转换到Done Phase")
 		c.meta.status = DonePhase
 	}
+
 }
 func (c *Coordinator) checkAllMapJobDone() bool {
 	for _, j := range c.meta.jobs {
@@ -189,8 +197,9 @@ func (c *Coordinator) Done() bool {
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c := Coordinator{
 		meta: MRMeta{
-			mapJobs:    make(chan *JobMeta, len(files)), // 带缓冲channel，来存储任务队列
-			reduceJobs: make(chan *JobMeta, nReduce),    // 带缓冲channel，来存储任务队列
+			mapJobs:    make(chan *JobMeta, len(files)),
+			reduceJobs: make(chan *JobMeta, nReduce),
+			jobs:       make(map[int]*JobMeta, len(files)+nReduce),
 			files:      files,
 			nReduce:    nReduce,
 			status:     MapPhase,
@@ -201,7 +210,6 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 		mu:            sync.Mutex{},
 	}
 	c.initJobs()
-	log.Println("00223")
 
 	// Your code here.
 
@@ -211,24 +219,28 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 
 func (c *Coordinator) initJobs() {
 	for _, v := range c.meta.files {
-
-		c.meta.mapJobs <- &JobMeta{
+		j := &JobMeta{
 			Id:       c.generate_job_id(),
 			Type:     MapJob,
 			Filename: v,
 			Status:   JobInit,
 			NReduce:  c.meta.nReduce,
 		}
+		c.meta.jobs[j.Id] = j
+		c.meta.mapJobs <- j
 	}
 
 	//todo  init reduce jobs
 	for i := 0; i < c.meta.nReduce; i++ {
-		c.meta.reduceJobs <- &JobMeta{
+		j := &JobMeta{
 			Id:        c.generate_job_id(),
-			Type:      MapJob,
+			Type:      ReduceJob,
 			Status:    JobInit,
 			NReduce:   c.meta.nReduce,
 			JobReduce: i,
 		}
+		c.meta.jobs[j.Id] = j
+		c.meta.reduceJobs <- j
 	}
+	log.Printf("[initJobs] init %d mapjob and %d reducejob", len(c.meta.files), c.meta.nReduce)
 }

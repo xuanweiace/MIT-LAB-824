@@ -35,7 +35,8 @@ func Worker(mapf func(string, string) []KeyValue,
 	worker_id := CallRegisterWorker()
 	fmt.Println("远程调用获得的id=", worker_id)
 	job := getEmptyJob()
-	for {
+	keep_working := true
+	for keep_working {
 		job = CallAssignJob(worker_id, job)
 		log.Printf("[Worker] worker=%d, get job=%+v", worker_id, job)
 		// 对job进行操作
@@ -47,8 +48,11 @@ func Worker(mapf func(string, string) []KeyValue,
 		case Nojob:
 			time.Sleep(time.Second)
 		case StopJob:
-			break
+			keep_working = false
 		}
+		job.setFinish()
+		log.Printf("[Worker] worker=%d, finish job=%+v", worker_id, job)
+		time.Sleep(time.Second)
 	}
 }
 func executeMapJob(job JobMeta, mapf func(string, string) []KeyValue) {
@@ -66,7 +70,7 @@ func executeMapJob(job JobMeta, mapf func(string, string) []KeyValue) {
 	intermediate = mapf(job.Filename, string(content))
 	t_map := make(map[string][]KeyValue, job.NReduce)
 	for _, entry := range intermediate {
-		s := generate_output_file(job.Id, ihash(entry.Key))
+		s := generate_output_file(job.Id, ihash(entry.Key)%job.NReduce)
 		if _, ok := t_map[s]; !ok {
 			t_map[s] = make([]KeyValue, 0)
 		}
@@ -81,7 +85,7 @@ func executeMapJob(job JobMeta, mapf func(string, string) []KeyValue) {
 	}
 }
 func generate_output_file(jobid, reduceid int) string {
-	return fmt.Sprintf("mr-tmp-%d-%d", jobid, reduceid)
+	return fmt.Sprintf("./mr-tmp/mr-tmp-%d-%d", jobid, reduceid)
 }
 
 // for sorting by key.
@@ -122,10 +126,13 @@ func executeReduceJob(job JobMeta, reducef func(string, []string) string) {
 func readFromLocalFileByJobReduce(jobReduce int) []KeyValue {
 	res := []KeyValue{}
 	path, _ := os.Getwd()
+	path += "/mr-tmp/"
 	rd, _ := ioutil.ReadDir(path)
+	println("rd:", rd)
 	for _, fi := range rd {
+		// println("fi.Name():", fi.Name())
 		if strings.HasPrefix(fi.Name(), "mr-tmp") && strings.HasSuffix(fi.Name(), strconv.Itoa(jobReduce)) {
-			res = append(res, readFromFile(fi.Name())...)
+			res = append(res, readFromFile(path+fi.Name())...)
 		}
 	}
 	return res
@@ -137,6 +144,7 @@ func readFromFile(filename string) []KeyValue {
 	sc := bufio.NewScanner(file)
 	for sc.Scan() {
 		line := sc.Text()
+		// println("line:", line)
 		li := strings.Split(line, " ")
 		res = append(res, KeyValue{
 			Key:   li[0],
