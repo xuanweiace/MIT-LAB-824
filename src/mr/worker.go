@@ -14,6 +14,9 @@ import (
 	"time"
 )
 
+// var TMP_DIR string = "mr-tmp/"
+var TMP_DIR string = ""
+
 // Map functions return a slice of KeyValue.
 type KeyValue struct {
 	Key   string
@@ -33,12 +36,11 @@ func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 	// Your worker implementation here.
 	worker_id := CallRegisterWorker()
-	fmt.Println("远程调用获得的id=", worker_id)
 	job := getEmptyJob()
 	keep_working := true
 	for keep_working {
 		job = CallAssignJob(worker_id, job)
-		log.Printf("[Worker] worker=%d, get job=%+v", worker_id, job)
+		// log.Printf("[Worker] worker=%d, get job=%+v", worker_id, job)
 		// 对job进行操作
 		switch job.Type {
 		case MapJob:
@@ -51,7 +53,7 @@ func Worker(mapf func(string, string) []KeyValue,
 			keep_working = false
 		}
 		job.setFinish()
-		log.Printf("[Worker] worker=%d, finish job=%+v", worker_id, job)
+		// log.Printf("[Worker] worker=%d, finish job=%+v", worker_id, job)
 		time.Sleep(time.Second)
 	}
 }
@@ -85,7 +87,7 @@ func executeMapJob(job JobMeta, mapf func(string, string) []KeyValue) {
 	}
 }
 func generate_output_file(jobid, reduceid int) string {
-	return fmt.Sprintf("./mr-tmp/mr-tmp-%d-%d", jobid, reduceid)
+	return fmt.Sprintf("./%smr-tmp-%d-%d", TMP_DIR, jobid, reduceid)
 }
 
 // for sorting by key.
@@ -126,11 +128,9 @@ func executeReduceJob(job JobMeta, reducef func(string, []string) string) {
 func readFromLocalFileByJobReduce(jobReduce int) []KeyValue {
 	res := []KeyValue{}
 	path, _ := os.Getwd()
-	path += "/mr-tmp/"
+	path += "/" + TMP_DIR
 	rd, _ := ioutil.ReadDir(path)
-	println("rd:", rd)
 	for _, fi := range rd {
-		// println("fi.Name():", fi.Name())
 		if strings.HasPrefix(fi.Name(), "mr-tmp") && strings.HasSuffix(fi.Name(), strconv.Itoa(jobReduce)) {
 			res = append(res, readFromFile(path+fi.Name())...)
 		}
@@ -159,21 +159,18 @@ func CallAssignJob(workerId int, done_job JobMeta) JobMeta {
 		Job:      done_job,
 	}
 	resp := AssignJobResponse{}
-	log.Printf("[CallAssignJob] workerId=%d, 即将远程调用AssignJob", req.WorkerId)
 	ok := call("Coordinator.AssignJob", &req, &resp)
 	if ok {
-		return *resp.Job
+		return resp.Job
 	} else {
-		log.Printf("[CallAssignJob] workerId=%d, 调用AssignJob失败", req.WorkerId)
+		// log.Printf("[CallAssignJob] workerId=%d, 调用AssignJob失败", req.WorkerId)
 		return getNoJob() // 调用失败，也返回NoJob，睡眠后重新获取
 	}
 }
 func CallRegisterWorker() int {
 	req := RegisterWorkerRequest{}
 	resp := RegisterWorkerResponse{}
-	fmt.Println("即将远程调用RegisterWorker")
 	ok := call("Coordinator.RegisterWorker", &req, &resp)
-	fmt.Println("resp:", resp)
 	if ok {
 		return resp.Id
 	} else {

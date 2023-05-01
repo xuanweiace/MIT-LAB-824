@@ -8,6 +8,7 @@ import (
 	"net/rpc"
 	"os"
 	"sync"
+	"time"
 )
 
 type MRStatus int
@@ -37,14 +38,14 @@ type MRMeta struct {
 
 // 超时控制啥的也放在这里
 type workerMeta struct {
-	id         int
-	currentJob JobMeta // 当前worker在执行哪种类型的Job
-	// todo lastVisitTime
-	// todo online bool
+	id            int
+	currentJob    JobMeta // 当前worker在执行哪种类型的Job
+	lastVisitTime time.Time
+	online        bool
 }
 
 func (w workerMeta) workerDead() bool {
-	return false
+	return time.Now().Sub(w.lastVisitTime).Seconds() > 10
 }
 
 // Your code here -- RPC handlers for the worker to call.
@@ -52,7 +53,7 @@ func (w workerMeta) workerDead() bool {
 // todo 需要加锁吗？是单线程执行这个的吗？ 应该是需要加锁的
 func (c *Coordinator) RegisterWorker(args *RegisterWorkerRequest, reply *RegisterWorkerResponse) error {
 	reply.Id = c.generate_worker_id()
-	log.Println("[coordinator] RegisterWorker called, assign workerid=", reply.Id)
+	// log.Println("[coordinator] RegisterWorker called, assign workerid=", reply.Id)
 	c.addWorker(workerMeta{id: reply.Id})
 	return nil
 }
@@ -62,46 +63,64 @@ func (c *Coordinator) RegisterWorker(args *RegisterWorkerRequest, reply *Registe
 func (c *Coordinator) AssignJob(req *AssignJobRequest, resp *AssignJobResponse) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if canWelcome := c.workerCome(req.WorkerId); !canWelcome {
+		resp.Job = getStopJob()
+		return fmt.Errorf("You are offline.")
+	}
 	//检查是否有携带已完成任务，有可能发生MR状态转换的
 	// 只处理map和reduce两种job即可
 	if req.Job.Status == JobFinish && (req.Job.isMapJob() || req.Job.isReduceJob()) {
-		log.Printf("当前任务%d已完成，开始分发下一个", req.Job.Id)
+		// log.Printf("当前任务%d已完成，开始分发下一个", req.Job.Id)
 		c.finishJob(req.WorkerId, req.Job)
 	}
-	noJob := getNoJob()
-	stopJob := getStopJob()
+
 	if c.meta.status == MapPhase {
 		if len(c.meta.mapJobs) > 0 { // 有可分配的map任务
 			j := <-c.meta.mapJobs
-			log.Printf("[AssignJob] workerId=%d, assigned MapJobId=%d", req.WorkerId, j.Id)
-			resp.Job = j
+			// log.Printf("[AssignJob] workerId=%d, assigned MapJobId=%d", req.WorkerId, j.Id)
+			resp.Job = *j
 			j.Status = JobRunning // 这样不会影响resp的status=Init，因为AssignJobResponse里的JobMeta不是指针。
 		} else { // 没有可分配的任务且刚刚没有MR状态转换，说明有任务没执行完，让他等待即可。
-			resp.Job = &noJob
+			resp.Job = getNoJob()
 		}
 	} else if c.meta.status == ReducePhase {
 		if len(c.meta.reduceJobs) > 0 {
 			j := <-c.meta.reduceJobs
-			log.Printf("[AssignJob] workerId=%d, assigned ReduceJobId=%d", req.WorkerId, j.Id)
-			resp.Job = j
+			// log.Printf("[AssignJob] workerId=%d, assigned ReduceJobId=%d", req.WorkerId, j.Id)
+			resp.Job = *j
 			j.Status = JobRunning
 		} else {
-			resp.Job = &noJob
+			resp.Job = getNoJob()
 		}
 	} else { // 如果MR是Done状态了
-		resp.Job = &stopJob
+		resp.Job = getStopJob()
 	}
-	c.worker[req.WorkerId].currentJob = *resp.Job
-	// todo 如果是noJob，查看是不是有worker断掉了，但是任务没完成
+	c.worker[req.WorkerId].currentJob = resp.Job
+	// 如果是noJob，查看是不是有worker断掉了，但是任务没完成
 	if resp.Job.isNoJob() {
 		c.replayJobChecker()
 	}
-	log.Println("[coordinator] AssignJob called")
 	return nil
+}
+func (c *Coordinator) workerCome(workerId int) bool {
+	//状态越少，实现越简单，所以这里断连，直接认为worker下线，如果重连，则认为是新worker
+	if workermeta, ok := c.worker[workerId]; !ok {
+		return false
+	} else if workermeta == nil {
+		c.worker[workerId] = &workerMeta{
+			id:            workerId,
+			currentJob:    getEmptyJob(),
+			lastVisitTime: time.Now(),
+			online:        true,
+		}
+	}
+	c.worker[workerId].lastVisitTime = time.Now()
+	return true
 }
 func (c *Coordinator) replayJobChecker() {
 	for _, v := range c.worker {
-		if v.workerDead() {
+		if v.workerDead() && (v.currentJob.isMapJob() || v.currentJob.isReduceJob()) {
+			delete(c.worker, v.id)
 			c.replayJob(v.currentJob)
 		}
 	}
@@ -119,15 +138,13 @@ func (c *Coordinator) replayJob(job JobMeta) {
 // 该方法是线程安全的
 func (c *Coordinator) finishJob(workerId int, job JobMeta) {
 	c.worker[workerId].currentJob = getEmptyJob()
-	//todo 为什么必须要这样写才行？
-	x := c.meta.jobs[job.Id]
-	x.setFinish()
+	c.meta.jobs[job.Id].setFinish()
 	//查看是否需要转换状态
 	if c.meta.status == MapPhase && c.checkAllMapJobDone() {
-		log.Printf("状态转换到Reduce Phase")
+		// log.Printf("状态转换到Reduce Phase")
 		c.meta.status = ReducePhase
 	} else if c.meta.status == ReduceJob && c.checkAllReduceJobDone() {
-		log.Printf("状态转换到Done Phase")
+		// log.Printf("状态转换到Done Phase")
 		c.meta.status = DonePhase
 	}
 
@@ -188,7 +205,7 @@ func (c *Coordinator) server() {
 
 	//l, e := net.Listen("tcp", ":1234")
 	sockname := coordinatorSock()
-	log.Printf("Coordinator sockname:%v", sockname)
+	// log.Printf("Coordinator sockname:%v", sockname)
 	os.Remove(sockname)
 	l, e := net.Listen("unix", sockname)
 	if e != nil {
@@ -263,5 +280,5 @@ func (c *Coordinator) initJobs() {
 		c.meta.jobs[j.Id] = j
 		c.meta.reduceJobs <- j
 	}
-	log.Printf("[initJobs] init %d mapjob and %d reducejob", len(c.meta.files), c.meta.nReduce)
+	// log.Printf("[initJobs] init %d mapjob and %d reducejob", len(c.meta.files), c.meta.nReduce)
 }
