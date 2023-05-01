@@ -40,6 +40,11 @@ type workerMeta struct {
 	id         int
 	currentJob JobMeta // 当前worker在执行哪种类型的Job
 	// todo lastVisitTime
+	// todo online bool
+}
+
+func (w workerMeta) workerDead() bool {
+	return false
 }
 
 // Your code here -- RPC handlers for the worker to call.
@@ -86,12 +91,28 @@ func (c *Coordinator) AssignJob(req *AssignJobRequest, resp *AssignJobResponse) 
 	} else { // 如果MR是Done状态了
 		resp.Job = &stopJob
 	}
-	// 如果是noJob，查看是不是有worker断掉了，但是任务没完成
+	c.worker[req.WorkerId].currentJob = *resp.Job
+	// todo 如果是noJob，查看是不是有worker断掉了，但是任务没完成
 	if resp.Job.isNoJob() {
-
+		c.replayJobChecker()
 	}
 	log.Println("[coordinator] AssignJob called")
 	return nil
+}
+func (c *Coordinator) replayJobChecker() {
+	for _, v := range c.worker {
+		if v.workerDead() {
+			c.replayJob(v.currentJob)
+		}
+	}
+
+}
+func (c *Coordinator) replayJob(job JobMeta) {
+	if job.isMapJob() {
+		c.meta.mapJobs <- &job
+	} else if job.isReduceJob() {
+		c.meta.reduceJobs <- &job
+	}
 }
 
 // 注意这里不能操作参数job，应该操作c.meta.jobs[job.Id]
